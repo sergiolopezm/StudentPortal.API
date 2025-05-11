@@ -1,0 +1,15 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\StudentPortal.API.Infrastructure\StudentPortal.API.Infrastructure.csproj" />
+    <ProjectReference Include="..\StudentPortal.API.Shared\StudentPortal.API.Shared.csproj" />
+    <ProjectReference Include="..\StudentPortal.API.Util\StudentPortal.API.Util.csproj" />
+  </ItemGroup>
+
+</Project>
