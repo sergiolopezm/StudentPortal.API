@@ -3230,6 +3230,6 @@ Se recomienda seguir las prácticas descritas en esta documentación para garant
 
 ---
 
-*Este documento fue actualizado por última vez el 12 de Mayo de 2024.*
+*Este documento fue actualizado por última vez el 12 de Mayo de 2025.*
 
 *© 2025 StudentPortal. Todos los derechos reservados.*
