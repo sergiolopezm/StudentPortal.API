@@ -1,8 +1,11 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using StudentPortal.API.Attributes;
 using StudentPortal.API.Domain.Contracts;
+using StudentPortal.API.Domain.Contracts.EstudianteRepository;
+using StudentPortal.API.Domain.Contracts.ProfesorRepository;
 using StudentPortal.API.Shared.GeneralDTO;
 using StudentPortal.API.Shared.InDTO;
+using System.Reflection;
 
 
 namespace StudentPortal.API.Controllers
@@ -110,6 +113,135 @@ namespace StudentPortal.API.Controllers
                 await logger.ErrorAsync($"Error en login para usuario: {loginDto.NombreUsuario}", ex);
 
                 return StatusCode(500, RespuestaDto.ErrorInterno(ex.Message));
+            }
+        }
+
+        /// <summary>
+        /// Registra un nuevo usuario en el sistema con la información completa
+        /// (datos básicos + Estudiante o Profesor, según el rol).
+        /// </summary>
+        [HttpPost("registroCompleto")]
+        [ServiceFilter(typeof(AccesoAttribute))]
+        [ServiceFilter(typeof(ValidarModeloAttribute))]
+        [ServiceFilter(typeof(JwtAuthorizationAttribute))]
+        public async Task<IActionResult> RegistroCompleto([FromBody] UsuarioRegistroCompletoDto registroDto)
+        {
+            var usuarioIdHeader = GetUsuarioId();     // Guid del usuario AUTENTICADO que hace la llamada
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+
+            // Logger contextual
+            var logger = _loggerFactory.CreateLogger(
+                usuarioIdHeader.ToString(), ip, nameof(RegistroCompleto));
+
+            try
+            {
+                await logger.InfoAsync($"Iniciando registro completo para usuario: {registroDto.NombreUsuario}");
+
+                // 1)  Crear el USUARIO BÁSICO --------------------------------------------------------
+                var usuarioRegistroDto = new UsuarioRegistroDto
+                {
+                    NombreUsuario = registroDto.NombreUsuario,
+                    Contraseña = registroDto.Contraseña,
+                    Nombre = registroDto.Nombre,
+                    Apellido = registroDto.Apellido,
+                    Email = registroDto.Email,
+                    RolId = registroDto.RolId
+                };
+
+                var resultadoUsuario = await _usuarioRepository.RegistrarUsuarioAsync(usuarioRegistroDto);
+
+                if (!resultadoUsuario.Exito)
+                {
+                    await logger.WarningAsync($"Registro fallido para usuario: {registroDto.NombreUsuario} – {resultadoUsuario.Detalle}");
+                    return BadRequest(resultadoUsuario);
+                }
+
+                // 2)  EXTRAER de forma SEGURA el Id del usuario recién creado -----------------------
+                Guid nuevoUsuarioId;
+                if (resultadoUsuario.Resultado is Guid guid)                          // a) ya es Guid
+                {
+                    nuevoUsuarioId = guid;
+                }
+                else if (resultadoUsuario.Resultado is string s && Guid.TryParse(s, out var g)) // b) string guid
+                {
+                    nuevoUsuarioId = g;
+                }
+                else                                                                    // c) probar reflexión («Id» | «UsuarioId»)
+                {
+                    var idProp = resultadoUsuario.Resultado?
+                                      .GetType()
+                                      .GetProperty("Id", BindingFlags.Public | BindingFlags.Instance)
+                               ?? resultadoUsuario.Resultado?
+                                      .GetType()
+                                      .GetProperty("UsuarioId", BindingFlags.Public | BindingFlags.Instance);
+
+                    if (idProp == null ||
+                        !Guid.TryParse(idProp.GetValue(resultadoUsuario.Resultado)?.ToString(), out nuevoUsuarioId))
+                    {
+                        // No se pudo determinar el Id  ► rollback y error 500
+                        await logger.ErrorAsync($"El resultado de RegistrarUsuarioAsync no contenía un Id válido");
+                        return StatusCode(500, RespuestaDto.ErrorInterno());
+                    }
+                }
+
+                // 3)  Crear registro específico según el ROL ----------------------------------------
+                switch (registroDto.RolId)
+                {
+                    // ----- ESTUDIANTE (RolId = 3) --------------------------------------------------
+                    case 3 when registroDto.EstudianteInfo is not null:
+                        {
+                            var estudianteDto = registroDto.EstudianteInfo;
+                            estudianteDto.UsuarioId = nuevoUsuarioId;
+
+                            var estudianteRepo = HttpContext.RequestServices.GetRequiredService<IEstudianteRepository>();
+                            var resultadoEstudiante = await estudianteRepo.CrearAsync(estudianteDto, usuarioIdHeader);
+
+                            if (!resultadoEstudiante.Exito)
+                            {
+                                await _usuarioRepository.CambiarEstadoUsuarioAsync(nuevoUsuarioId, false);  // rollback
+                                await logger.WarningAsync($"Registro fallido para estudiante: {registroDto.NombreUsuario} – {resultadoEstudiante.Detalle}");
+                                return BadRequest(resultadoEstudiante);
+                            }
+
+                            await _logRepository.AccionAsync(usuarioIdHeader, ip, nameof(RegistroCompleto),
+                                                             $"Registro exitoso para estudiante: {registroDto.NombreUsuario}");
+                            await logger.ActionAsync($"Registro completo exitoso (estudiante) para: {registroDto.NombreUsuario}");
+                            return Ok(resultadoEstudiante);
+                        }
+
+                    // ----- PROFESOR (RolId = 2) -----------------------------------------------------
+                    case 2 when registroDto.ProfesorInfo is not null:
+                        {
+                            var profesorDto = registroDto.ProfesorInfo;
+                            profesorDto.UsuarioId = nuevoUsuarioId;
+
+                            var profesorRepo = HttpContext.RequestServices.GetRequiredService<IProfesorRepository>();
+                            var resultadoProfesor = await profesorRepo.CrearAsync(profesorDto, usuarioIdHeader);
+
+                            if (!resultadoProfesor.Exito)
+                            {
+                                await _usuarioRepository.CambiarEstadoUsuarioAsync(nuevoUsuarioId, false);  // rollback
+                                await logger.WarningAsync($"Registro fallido para profesor: {registroDto.NombreUsuario} – {resultadoProfesor.Detalle}");
+                                return BadRequest(resultadoProfesor);
+                            }
+
+                            await _logRepository.AccionAsync(usuarioIdHeader, ip, nameof(RegistroCompleto),
+                                                             $"Registro exitoso para profesor: {registroDto.NombreUsuario}");
+                            await logger.ActionAsync($"Registro completo exitoso (profesor) para: {registroDto.NombreUsuario}");
+                            return Ok(resultadoProfesor);
+                        }
+
+                    // ----- CUALQUIER OTRO ROL -------------------------------------------------------
+                    default:
+                        // Sólo se creó la cuenta básica (Admin, etc.)
+                        return Ok(resultadoUsuario);
+                }
+            }
+            catch (Exception ex)
+            {
+                await _logRepository.ErrorAsync(usuarioIdHeader, ip, nameof(RegistroCompleto), ex.Message);
+                await logger.ErrorAsync($"Error en registro completo para usuario: {registroDto.NombreUsuario}", ex);
+                return StatusCode(500, RespuestaDto.ErrorInterno());
             }
         }
 
