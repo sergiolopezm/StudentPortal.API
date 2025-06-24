@@ -125,12 +125,32 @@ namespace StudentPortal.API.Domain.Services.InscripcionEstudianteService
                     inscripcionDto.EstudianteId,
                     inscripcionDto.MateriaId);
 
-                // Validar que no exista ya una inscripción activa
-                if (await ExisteInscripcionAsync(inscripcionDto.EstudianteId, inscripcionDto.MateriaId))
+                // Validar que no exista ya una inscripción
+                var inscripcionExistente = await _context.InscripcionesEstudiantes
+                    .FirstOrDefaultAsync(ie => ie.EstudianteId == inscripcionDto.EstudianteId &&
+                                               ie.MateriaId == inscripcionDto.MateriaId);
+
+                if (inscripcionExistente != null)
                 {
-                    return RespuestaDto.ParametrosIncorrectos(
-                        "Inscripción fallida",
-                        "El estudiante ya está inscrito en esta materia");
+                    if (inscripcionExistente.Activo && inscripcionExistente.Estado == "Inscrito")
+                    {
+                        return RespuestaDto.ParametrosIncorrectos(
+                            "Inscripción fallida",
+                            "El estudiante ya está inscrito en esta materia");
+                    }
+
+                    // Reactivar inscripción existente
+                    inscripcionExistente.Estado = "Inscrito";
+                    inscripcionExistente.Activo = true;
+                    inscripcionExistente.FechaModificacion = DateTime.Now;
+                    await _context.SaveChangesAsync();
+
+                    // Cargar información para la respuesta
+                    var inscripcionCompleta = await ObtenerPorIdAsync(inscripcionExistente.Id);
+                    return RespuestaDto.Exitoso(
+                        "Inscripción reactivada",
+                        $"La inscripción del estudiante ha sido reactivada en {inscripcionCompleta?.MateriaCodigoyNombre}",
+                        inscripcionCompleta);
                 }
 
                 // Validar límite de materias (3)
@@ -165,34 +185,48 @@ namespace StudentPortal.API.Domain.Services.InscripcionEstudianteService
                 await _context.SaveChangesAsync();
 
                 // Cargar información para la respuesta
-                var inscripcionCompleta = await ObtenerPorIdAsync(inscripcion.Id);
+                var inscripcionCompletaNueva = await ObtenerPorIdAsync(inscripcion.Id);
 
                 return RespuestaDto.Exitoso(
                     "Inscripción exitosa",
-                    $"El estudiante ha sido inscrito en {inscripcionCompleta?.MateriaCodigoyNombre}",
-                    inscripcionCompleta);
+                    $"El estudiante ha sido inscrito en {inscripcionCompletaNueva?.MateriaCodigoyNombre}",
+                    inscripcionCompletaNueva);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error al inscribir estudiante {EstudianteId} en materia {MateriaId}",
                     inscripcionDto.EstudianteId, inscripcionDto.MateriaId);
 
-                // Capturar errores específicos de los triggers
-                if (ex.InnerException?.Message?.Contains("Un estudiante no puede inscribir más de 3 materias") == true)
+                // Capturar errores específicos de los triggers o validaciones
+                var innerMessage = ex.InnerException?.Message ?? ex.Message;
+
+                if (innerMessage.Contains("Un estudiante no puede inscribir más de 3 materias"))
                 {
                     return RespuestaDto.ParametrosIncorrectos(
                         "Inscripción fallida",
                         "El estudiante ya tiene el máximo de 3 materias inscritas");
                 }
 
-                if (ex.InnerException?.Message?.Contains("Un estudiante no puede tener clases con el mismo profesor") == true)
+                if (innerMessage.Contains("Un estudiante no puede tener clases con el mismo profesor"))
                 {
+                    // Obtener información de la materia para mensaje más descriptivo
+                    var materia = await _context.Materias.FindAsync(inscripcionDto.MateriaId);
                     return RespuestaDto.ParametrosIncorrectos(
                         "Inscripción fallida",
-                        "El estudiante ya tiene clases con este profesor en otra materia");
+                        $"El estudiante ya tiene clases con el profesor de {materia?.Nombre ?? "esta materia"} en otra materia");
                 }
 
-                return RespuestaDto.ErrorInterno(ex.Message);
+                // Para cualquier otro error de la base de datos
+                if (innerMessage.Contains("An error occurred while saving the entity changes"))
+                {
+                    return RespuestaDto.ErrorInterno(
+                        "Error al inscribir estudiante",
+                        "Ocurrió un error al procesar la inscripción. Por favor, intente nuevamente.");
+                }
+
+                return RespuestaDto.ErrorInterno(
+                    "Error al inscribir estudiante",
+                    "Ocurrió un error inesperado. Por favor, contacte al administrador.");
             }
         }
 
@@ -283,10 +317,7 @@ namespace StudentPortal.API.Domain.Services.InscripcionEstudianteService
         public async Task<bool> ExisteInscripcionAsync(int estudianteId, int materiaId)
         {
             return await _context.InscripcionesEstudiantes
-                .AnyAsync(ie => ie.EstudianteId == estudianteId &&
-                              ie.MateriaId == materiaId &&
-                              ie.Activo &&
-                              ie.Estado == "Inscrito");
+                .AnyAsync(ie => ie.EstudianteId == estudianteId && ie.MateriaId == materiaId);
         }
 
         public async Task<int> ContarMateriasInscritasAsync(int estudianteId)

@@ -10,7 +10,7 @@
         public string? Detalle { get; set; }
         public object? Resultado { get; set; }
 
-        public static RespuestaDto ErrorInterno(string? detalle = null)
+        public static RespuestaDto ErrorInterno(string? detalle = null, string v = null)
         {
             return new RespuestaDto
             {
